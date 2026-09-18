@@ -43,6 +43,25 @@ SLSConfigureDisplayIndependentOutput(config, displayID, false)
 
 ## 安装
 
+### Homebrew
+
+```bash
+brew install zxdong262/tap/screen-helper
+```
+
+formula 放在 [zxdong262/homebrew-tap](https://github.com/zxdong262/homebrew-tap)，
+**从源码编译**，所以不存在「下载来的二进制被 Gatekeeper 拦下」这回事。
+
+Homebrew 6.0.0 起第三方 tap 需要显式信任：上面那种带全名的写法只信任这一个
+formula，推荐这样。想信任整个 tap：
+
+```bash
+brew tap zxdong262/tap
+brew trust zxdong262/tap
+```
+
+### 压缩包
+
 从 [releases 页面](https://github.com/zxdong262/screen-helper/releases) 拿压缩包，
 或者直接取最新版：
 
@@ -221,6 +240,16 @@ bash scripts/release --version 2.0.0  # 直接跳到指定版本
 接着 CI 用 `-Werror` 编译通用二进制、跑自检、发现 tag 已存在就拒绝发布，
 最后创建 GitHub Release 并附上 `.tar.gz` 和 `.sha256`。
 往 `main` 上正常提交不会触发任何构建。
+
+Homebrew 的 formula 放在另一个 tap 仓库
+[zxdong262/homebrew-tap](https://github.com/zxdong262/homebrew-tap)，
+它在 release 出来之后单独 bump —— formula 指向的是 tag 归档，所以 tag 必须先存在：
+
+```bash
+git clone https://github.com/zxdong262/homebrew-tap
+cd homebrew-tap
+./scripts/bump screen-helper <版本号>
+```
 
 ## 许可证
 

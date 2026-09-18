@@ -45,6 +45,25 @@ on its own. `screen-helper icon always` pins it back to always visible.
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install zxdong262/tap/screen-helper
+```
+
+The formula lives in [zxdong262/homebrew-tap](https://github.com/zxdong262/homebrew-tap)
+and builds from source, so there is no quarantined prebuilt binary to work
+around. Since Homebrew 6.0.0 third-party taps need explicit trust — the fully
+qualified name above grants trust to this one formula only. To trust the whole
+tap instead:
+
+```bash
+brew tap zxdong262/tap
+brew trust zxdong262/tap
+```
+
+### Tarball
+
 Grab the tarball from the [releases page](https://github.com/zxdong262/screen-helper/releases),
 or take the latest one directly:
 
@@ -246,6 +265,17 @@ force-push `HEAD` to `build`.
 CI then builds the universal binary with `-Werror`, smoke tests it, refuses to
 publish if the tag already exists, and creates the GitHub release with the
 `.tar.gz` and its `.sha256`. Normal commits to `main` trigger nothing.
+
+The Homebrew formula lives in a separate tap,
+[zxdong262/homebrew-tap](https://github.com/zxdong262/homebrew-tap), and is
+bumped after the release exists — it points at the tag archive, so the tag has
+to be there first:
+
+```bash
+git clone https://github.com/zxdong262/homebrew-tap
+cd homebrew-tap
+./scripts/bump screen-helper <version>
+```
 
 ## License
 
