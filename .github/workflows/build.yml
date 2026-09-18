@@ -1,0 +1,140 @@
+name: build
+
+# 只在 build 分支上跑。scripts/release 会把待发布的提交 force push 到 build，
+# main 上的日常提交不触发任何构建 —— 这样发版永远是显式动作，
+# 唯一入口就是 `scripts/release`。
+on:
+  push:
+    branches: [ build ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    if: >-
+      !contains(github.event.head_commit.message, '[skip build]') &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read VERSION
+        run: |
+          set -euo pipefail
+          version="$(tr -d ' \t\r\n' < VERSION)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION holds '$version', expected x.y.z"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+          echo "PKG=screen-helper-v$version-macos-universal.tar.gz" >> "$GITHUB_ENV"
+          {
+            echo "## screen-helper v$version"
+            echo
+            echo "commit: \`$GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse to overwrite an existing release
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::tag $TAG already exists. Bump the version and release again:"
+            echo "::error::  bash scripts/release --bump patch"
+            exit 1
+          fi
+          echo "$TAG is free"
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sw_vers
+          clang --version
+
+      - name: Build (warnings are errors)
+        run: make clean && make CC="clang -Werror"
+
+      - name: Build universal tarball
+        run: make dist
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          ./dist/screen-helper --version
+          test "$(./dist/screen-helper --version)" = "screen-helper $VERSION"
+          ./dist/screen-helper help > /dev/null
+          ./dist/screen-helper list > /dev/null
+          ./dist/screen-helper diag > /dev/null
+          ./dist/screen-helper icon status > /dev/null
+          # runner 上没有外接屏，fix --dry-run 会以 3(no external display) 退出，
+          # 0 和 3 都算正常，别的退出码才是真出问题。
+          rc=0
+          ./dist/screen-helper fix --dry-run > /dev/null || rc=$?
+          case "$rc" in
+            0|3) echo "fix --dry-run: exit $rc (ok)" ;;
+            *)   echo "::error::fix --dry-run exited $rc"; exit 1 ;;
+          esac
+          lipo -info ./dist/screen-helper
+          lipo -info ./dist/screen-helper | grep -q 'x86_64 arm64\|arm64 x86_64'
+          tar -tzf "dist/$PKG"
+
+      - name: Checksum
+        run: |
+          set -euo pipefail
+          cat "dist/$PKG.sha256"
+          {
+            echo
+            echo '```'
+            cat "dist/$PKG.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: screen-helper-v${{ env.VERSION }}-macos-universal
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          notes="$(mktemp)"
+          {
+            printf 'screen-helper %s — macOS universal binary (arm64 + x86_64), built by CI from `%s`.\n\n' "$VERSION" "$GITHUB_SHA"
+            printf '### Install\n\n'
+            printf '```bash\n'
+            printf 'curl -LO https://github.com/%s/releases/download/%s/%s\n' "$GITHUB_REPOSITORY" "$TAG" "$PKG"
+            printf 'tar -xzf %s\n' "$PKG"
+            printf './install.sh\n'
+            printf '```\n\n'
+            printf 'Verify the download against `%s.sha256` first. The install script clears the Gatekeeper quarantine flag and re-signs the binary ad-hoc, so it runs straight away afterwards.\n\n' "$PKG"
+            printf 'Then:\n\n'
+            printf '```bash\nscreen-helper status\n```\n\n'
+            printf 'No third-party runtime — the binary links only CoreGraphics, CoreFoundation and IOKit. The README covers what each command does, and why `fix` writes that private SkyLight flag blind.\n'
+          } > "$notes"
+
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "screen-helper $VERSION" \
+            --notes-file "$notes" \
+            "dist/$PKG" "dist/$PKG.sha256"
+
+          {
+            echo
+            echo "release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"

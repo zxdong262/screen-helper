@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# screen-helper — 发布驱动
+#
+# 把待发布的提交推到 CI 唯一监听的 `build` 分支，由 CI 构建通用二进制并创建
+# GitHub Release。版本号来自仓库根目录的 VERSION 文件，CI 用它打 tag v<version>。
+#
+# 为什么绕一层 build 分支：main 上的日常提交不该发版，CI 只监听 build，
+# 所以「发布」是个显式动作，往 main 推代码不会误触发任何构建。
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+BUILD_BRANCH="build"
+VERSION_FILE="VERSION"
+DIST_BIN="dist/screen-helper"
+
+DRY_RUN=0
+DO_VERIFY=1
+BUMP=""
+NEW_VERSION=""
+SOURCE_BRANCH=""
+
+step() { printf '\n==> %s\n' "$*"; }
+info() { printf '    %s\n' "$*"; }
+warn() { printf 'release: %s\n' "$*" >&2; }
+die()  { printf 'release: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+release — 触发一次 screen-helper 发布
+
+  scripts/release                  用当前 VERSION 重新触发一次发布
+  scripts/release --bump patch     升 patch 号后发布（minor / major 同理）
+  scripts/release --version 2.0.0  直接指定版本号
+  scripts/release --branch main    指定从哪个分支发布（默认当前分支）
+  scripts/release --no-verify      跳过本机构建校验（不推荐）
+  scripts/release --dry-run        只打印将会执行什么
+
+流程：preflight → 同步 origin → 升版本（可选）→ make dist 本地校验
+      → push 源分支 → force push HEAD 到 build 分支 → CI 构建并发布
+EOF
+}
+
+# dry-run 感知的命令执行器：所有会改状态的动作都走这里。
+run() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '    [dry-run] %s\n' "$*"
+    return 0
+  fi
+  "$@"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bump)      [ $# -ge 2 ] || die "--bump needs patch|minor|major"; BUMP="$2"; shift 2;;
+    --version)   [ $# -ge 2 ] || die "--version needs a value like 1.2.3"; NEW_VERSION="$2"; shift 2;;
+    --branch)    [ $# -ge 2 ] || die "--branch needs a branch name"; SOURCE_BRANCH="$2"; shift 2;;
+    --no-verify) DO_VERIFY=0; shift;;
+    --dry-run)   DRY_RUN=1; shift;;
+    -h|--help)   usage; exit 0;;
+    *)           warn "unknown option: $1"; usage >&2; exit 2;;
+  esac
+done
+
+is_semver() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
+bump_version() {
+  local cur="$1" part="$2" major minor patch
+  is_semver "$cur" || die "VERSION holds '$cur', expected x.y.z — fix it by hand first"
+  IFS=. read -r major minor patch <<< "$cur"
+  case "$part" in
+    major) major=$((major + 1)); minor=0; patch=0;;
+    minor) minor=$((minor + 1)); patch=0;;
+    patch) patch=$((patch + 1));;
+    *)     die "--bump expects patch|minor|major, got '$part'";;
+  esac
+  printf '%s.%s.%s' "$major" "$minor" "$patch"
+}
+
+repo_slug() {
+  local url
+  url="$(git config --get remote.origin.url 2>/dev/null || true)"
+  case "$url" in
+    git@github.com:*|ssh://git@github.com/*|https://github.com/*) ;;
+    *) return 0;;
+  esac
+  printf '%s' "$url" \
+    | sed -e 's#^git@[^:]*:##' -e 's#^ssh://git@[^/]*/##' -e 's#^https\{0,1\}://[^/]*/##' -e 's#\.git$##'
+}
+
+# ---------------------------------------------------------------- preflight
+
+step "preflight"
+
+git rev-parse --git-dir > /dev/null 2>&1 || die "not a git repository"
+[ -f "$VERSION_FILE" ] || die "$VERSION_FILE is missing"
+
+if [ -n "$(git status --porcelain)" ]; then
+  git status --short
+  die "working tree is dirty — commit or stash first, then re-run"
+fi
+
+current_version="$(tr -d ' \t\r\n' < "$VERSION_FILE")"
+is_semver "$current_version" || die "$VERSION_FILE holds '$current_version', expected x.y.z"
+[ -z "$NEW_VERSION" ] || is_semver "$NEW_VERSION" || die "--version expects x.y.z, got '$NEW_VERSION'"
+
+if [ -n "$SOURCE_BRANCH" ]; then
+  branch="$SOURCE_BRANCH"
+  run git checkout "$branch"
+else
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+fi
+
+[ "$branch" != "$BUILD_BRANCH" ] || die "refusing to release from '$BUILD_BRANCH' — that branch belongs to CI"
+[ "$branch" != "HEAD" ] || die "detached HEAD; check out a branch first"
+
+has_remote=0
+remote_url=""
+if git remote get-url origin > /dev/null 2>&1; then
+  has_remote=1
+  remote_url="$(git config --get remote.origin.url)"
+fi
+
+slug=""
+if [ "$has_remote" -eq 1 ]; then
+  slug="$(repo_slug)"
+fi
+
+info "branch      : $branch"
+info "version     : $current_version"
+info "build branch: $BUILD_BRANCH  (CI listens here and nowhere else)"
+if [ -n "$slug" ]; then
+  info "remote      : $slug"
+elif [ -n "$remote_url" ]; then
+  info "remote      : $remote_url"
+else
+  info "remote      : none"
+fi
+if [ "$DO_VERIFY" -eq 1 ]; then
+  info "verify      : yes (make dist + smoke)"
+else
+  info "verify      : skipped"
+fi
+if [ "$DRY_RUN" -eq 1 ]; then
+  info "mode        : dry-run, nothing will change"
+fi
+
+# ---------------------------------------------------------------- sync
+
+if [ "$has_remote" -eq 1 ]; then
+  step "sync with origin"
+  run git fetch origin --tags --prune
+  if [ "$DRY_RUN" -eq 0 ] && git rev-parse --verify --quiet "origin/$branch" > /dev/null; then
+    run git pull --ff-only origin "$branch"
+  fi
+fi
+
+# ---------------------------------------------------------------- version
+
+next_version="$current_version"
+if [ -n "$NEW_VERSION" ]; then
+  next_version="$NEW_VERSION"
+elif [ -n "$BUMP" ]; then
+  next_version="$(bump_version "$current_version" "$BUMP")"
+fi
+
+if [ "$next_version" != "$current_version" ]; then
+  step "bump version: $current_version -> $next_version"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    printf '%s\n' "$next_version" > "$VERSION_FILE"
+    git add "$VERSION_FILE"
+    git commit -m "release v$next_version"
+  else
+    info "[dry-run] VERSION = $next_version, then commit 'release v$next_version'"
+  fi
+else
+  step "version unchanged: v$next_version"
+  info "re-releasing the current commit; use --bump patch if you meant a new version"
+fi
+
+# ---------------------------------------------------------------- verify
+
+if [ "$DO_VERIFY" -eq 1 ]; then
+  step "verify local build"
+  run make clean
+  run make dist
+  if [ "$DRY_RUN" -eq 0 ]; then
+    lipo -info "$DIST_BIN"
+    "./$DIST_BIN" --version
+    "./$DIST_BIN" help > /dev/null
+    "./$DIST_BIN" list > /dev/null
+    info "build ok"
+  fi
+fi
+
+# ---------------------------------------------------------------- push
+
+if [ "$has_remote" -eq 0 ]; then
+  step "no 'origin' remote — stopping here"
+  info "add one and re-run:"
+  info "  git remote add origin git@github.com:<owner>/screen-helper.git"
+  exit 0
+fi
+
+step "push $branch"
+run git push origin "$branch"
+
+step "hand off to CI: push HEAD -> $BUILD_BRANCH"
+info "this force-push is the trigger; CI only listens on $BUILD_BRANCH"
+run git push --force origin "HEAD:refs/heads/$BUILD_BRANCH"
+
+step "done"
+info "version : v$next_version"
+info "branch  : $branch -> $BUILD_BRANCH"
+if [ -n "$slug" ]; then
+  info "actions : https://github.com/$slug/actions/workflows/build.yml"
+  info "release : https://github.com/$slug/releases/tag/v$next_version"
+  info "CI builds the universal binary, smoke-tests it, tags it and publishes the tarball"
+else
+  info "origin is not a github.com URL — watch your own CI at $remote_url"
+fi

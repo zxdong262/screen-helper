@@ -1,0 +1,14 @@
+# build output
+/screen-helper
+/dist
+*.o
+*.dSYM
+
+# local only: original investigation notes + agent scratch dirs
+/temp
+.workbuddy
+.kilo
+.codeartsdoer
+
+# macOS
+.DS_Store
