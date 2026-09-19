@@ -265,9 +265,31 @@ void sh_config_cancel(CGDisplayConfigRef cfg) {
 /* 模式选择                                                                    */
 /* -------------------------------------------------------------------------- */
 
+/*
+ * 默认（没有显式写 @Hz 时）宁可要低的刷新率，也不要「高但面板吃不下」的。
+ *
+ * 2026-09-19 实测：外接屏被绑在 2560x1440@72Hz，DP/HDMI 链路 Active/HPD/DriverStatus
+ * 全绿、CG 也报 online+active，但面板 scaler 同步不了那个非标准时序 ⇒ 屏幕全黑，
+ * 而 `state` 行照样是 ok。系统不会给任何提示。所以默认策略是钉 60Hz。
+ */
+#define SH_SAFE_HZ 60.0
+
 static double refresh_of(CGDisplayModeRef m) {
   double r = CGDisplayModeGetRefreshRate(m);
-  return r > 0 ? r : 60.0;
+  return r > 0 ? r : SH_SAFE_HZ;
+}
+
+/*
+ * 「安全刷新率」罚分，越小越优先：
+ *   0                      ≈60Hz（把 59.94 之类的也归进来）
+ *   1 + (60 - hz)/1000     低于 60：可用，越接近 60 越好
+ *   1000 + hz              高于 60：一律排最后，且越低越优先
+ * 上界约 1145，远小于面积项 1e6/像素 的分辨率，不会跨尺寸抢戏。
+ */
+static double safe_hz_penalty(double hz) {
+  if (fabs(hz - SH_SAFE_HZ) < 0.5) return 0.0;
+  if (hz < SH_SAFE_HZ) return 1.0 + (SH_SAFE_HZ - hz) / 1000.0;
+  return 1000.0 + hz;
 }
 
 CGDisplayModeRef sh_display_best_mode(CGDirectDisplayID id,
@@ -292,11 +314,12 @@ CGDisplayModeRef sh_display_best_mode(CGDirectDisplayID id,
     if (want_w && want_h) {
       bool hit = (w == want_w && h == want_h) || (pw == want_w && ph == want_h);
       if (!hit) continue;
-      /* 尺寸精确匹配后，按刷新率贴近程度打分 */
-      score = 1000.0 - fabs(refresh_of(m) - (want_hz > 0 ? want_hz : refresh_of(m)));
+      /* 尺寸精确匹配后：显式给了 Hz 就贴近它，没给就走安全刷新率偏好 */
+      score = 1000.0 - (want_hz > 0 ? fabs(refresh_of(m) - want_hz)
+                                    : safe_hz_penalty(refresh_of(m)));
     } else {
-      /* 没指定就挑面积最大的，同面积取刷新率高的 */
-      score = (double)(w * h) * 1000.0 + refresh_of(m);
+      /* 没指定尺寸就挑面积最大的，同面积取更安全的刷新率 */
+      score = (double)(w * h) * 1000000.0 - safe_hz_penalty(refresh_of(m));
     }
 
     if (score > best_score) { best_score = score; best = m; }

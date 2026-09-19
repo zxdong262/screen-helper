@@ -80,8 +80,14 @@ CGError sh_config_begin(CGDisplayConfigRef *cfg);
 CGError sh_config_commit(CGDisplayConfigRef cfg, bool persist);
 void    sh_config_cancel(CGDisplayConfigRef cfg);
 
-/* 在 id 的所有模式里挑一个最接近 w×h@hz 的。want_hz<=0 表示不挑刷新率，
- * want_w/want_h 为 0 表示要“最大的”。返回的是 retained 的 mode，用完要 release。 */
+/* 在 id 的所有模式里挑一个最接近 w×h@hz 的。want_w/want_h 为 0 表示要“最大的”。
+ *
+ * want_hz > 0  按给的刷新率贴近程度挑，写多少就是多少（用户可以硬要 72/144）。
+ * want_hz <= 0 走「安全刷新率」策略：优先 60Hz，其次 ≤60 里最接近 60 的，
+ *              最后才轮到 >60 的低档。高刷时序在部分面板上会被导出却同步不了
+ *              （2026-09-19：2560x1440@72Hz 黑屏但 state 仍报 ok），所以默认不取高刷。
+ *
+ * 返回的是 retained 的 mode，用完要 release。 */
 CGDisplayModeRef sh_display_best_mode(CGDirectDisplayID id,
                                      size_t want_w, size_t want_h, double want_hz);
 

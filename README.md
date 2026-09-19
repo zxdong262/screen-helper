@@ -43,6 +43,21 @@ rollback around it.
 Separately: when no external display is attached, that menu bar icon disappears
 on its own. `screen-helper icon always` pins it back to always visible.
 
+### A second failure mode: a refresh rate the panel cannot sync
+
+An external display can also go completely black while *every* state check stays
+green: `online=1`, `active=1`, the DP/HDMI link `Active = Yes` / `HPD = High` /
+`DriverStatus = Ready`, no mirroring — and `screen-helper status` reporting
+`state ok`. The measured cause was macOS binding the panel to a non-standard
+timing, `2560x1440@72Hz`. The mode is advertised by the display and macOS applies
+it happily, but the scaler in the panel cannot lock onto it, so nothing appears
+on screen. `fix` is not the lever here (and it never touches the private marker
+for this): the resolution is to pin a standard rate, e.g.
+`screen-helper mode 2560x1440@60 --save`.
+
+Because of that, mode selection never picks a high refresh rate on its own — see
+`mode` below.
+
 ## Install
 
 ### Homebrew
@@ -116,7 +131,10 @@ Mutating:
 - `extend` — switch to extension mode (undo mirroring); `--arrange right|left|above|below`
   also places the display
 - `mirror` — mirror the other online displays onto the main one
-- `mode 2560x1440@60` — bind a resolution to the target display
+- `mode 2560x1440@60` — bind a resolution to the target display. Omit `@Hz` and it
+  pins 60Hz: a high refresh timing may be advertised and applied while the panel
+  cannot actually sync it, so the default is the safe rate. Write `@Hz` explicitly
+  if you really want something else
 - `enable <id>` / `disable <id>` — turn a display on or off; `disable` needs
   `--yes`, because it is the very thing that creates the broken state
 - `save` — commit the current arrangement with `kCGConfigurePermanently`

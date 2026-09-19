@@ -35,6 +35,7 @@ static void usage(FILE *f) {
     "  enable <id>                  打开某个屏\n"
     "  disable <id>                 关闭某个屏（需要 --yes；这正是搞坏状态的入口）\n"
     "  mode <WxH[@Hz]>              给目标屏绑定分辨率，例如 2560x1440@60\n"
+    "                               省略 @Hz 时默认钉 60Hz，不会去挑高刷\n"
     "  icon <模式>                  管理菜单栏那个「紫色两屏叠加」图标\n"
     "  diag [--logs]                采集诊断信息\n"
     "  version                      版本号\n"

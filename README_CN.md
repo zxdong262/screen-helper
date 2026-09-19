@@ -41,6 +41,21 @@ SLSConfigureDisplayIndependentOutput(config, displayID, false)
 另外，没有外接显示器的时候，那个菜单栏图标自己也会消失；
 `screen-helper icon always` 负责把它恢复成常显。
 
+### 第二类故障：面板同步不了的刷新率
+
+外接屏也可能在**所有状态检查全绿**的情况下彻底黑掉：`online=1`、`active=1`、
+DP/HDMI 链路 `Active = Yes` / `HPD = High` / `DriverStatus = Ready`、没有镜像，
+`screen-helper status` 还报 `state ok`。实测到的原因是 macOS 把面板绑到了一个
+非标准时序 `2560x1440@72Hz`：这个模式由显示器自己导出、macOS 照单应用，但面板的
+scaler 锁不住它，于是屏幕上什么都没有。这类故障 `fix` 不是杠杆（它也没碰私有标记），
+解法是钉一个标准刷新率：
+
+```bash
+screen-helper mode 2560x1440@60 --save
+```
+
+因此模式选择不会自己挑高刷 —— 见下面的 `mode`。
+
 ## 安装
 
 ### Homebrew
@@ -110,7 +125,9 @@ screen-helper [命令] [选项]        # 不带命令时等于 status
 - `fix` —— 修复离线的外接屏，并恢复菜单栏图标。这个工具存在的理由就是它
 - `extend` —— 切到扩展模式（取消镜像），`--arrange right|left|above|below` 可顺带摆放
 - `mirror` —— 把其它在线屏镜像到主屏
-- `mode 2560x1440@60` —— 给目标屏绑定分辨率
+- `mode 2560x1440@60` —— 给目标屏绑定分辨率。省略 `@Hz` 时默认钉 60Hz：
+  高刷时序可能被导出、被应用，但面板根本同步不了，所以默认取安全档；
+  确实要别的刷新率就显式写 `@Hz`
 - `enable <id>` / `disable <id>` —— 开关某个屏；`disable` 需要 `--yes`，
   因为它正是搞坏状态的入口本身
 - `save` —— 把当前这套摆法用 `kCGConfigurePermanently` 固化下来
